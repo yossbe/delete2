@@ -1,0 +1,35 @@
+*&---------------------------------------------------------------------*
+*& Report ZPP_JOB_RAISE_EVENT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ZPP_JOB_RAISE_EVENT.
+
+PARAMETERS: p_im     TYPE flag,
+            p_event  type string DEFAULT 'Z_TRIGGER_BGJOB',
+            p_eventp type string.
+*            p_date   like tbtcjob-sdlstrtdt,
+*            p_time   like tbtcjob-sdlstrttm,
+*            p_job    type char32 default 'Zetes NV Interface'.
+
+if p_im = 'X'.  "immidiately raise event
+  call function 'BP_EVENT_RAISE'
+    exporting
+      eventid                = p_event      "'Z_TRIGGER_BGJOB'
+      eventparm              = p_eventp
+*     TARGET_INSTANCE        = ' '
+*     TARGET_MODE            = ' '
+    exceptions
+      bad_eventid            = 1
+      eventid_does_not_exist = 2
+      eventid_missing        = 3
+      raise_failed           = 4
+      others                 = 5.
+  if sy-subrc <> 0.
+* Implement suitable error handling here
+    message id sy-msgid type sy-msgty number sy-msgno with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*    message s001(ZPP_JOBS) with p_system  display like 'W'.
+  endif.
+*ELSEIF  p_date is not INITIAL.  "schedule job later to raise event
+
+endif.
