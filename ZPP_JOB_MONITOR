@@ -1,0 +1,500 @@
+*&---------------------------------------------------------------------*
+*& Report ZPP_JOB_MONITOR
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ZPP_JOB_MONITOR.
+"declare of variables
+TABLES: ZPP_JOBS, tbtco.
+types: BEGIN OF t_output.
+         INCLUDE TYPE zpp_jobs.
+         TYPES:  alv_color type lvc_t_scol.
+
+types END OF t_output.
+
+data: lt_output TYPE TABLE OF t_output  WITH EMPTY KEY.
+
+DATA: salv             type REF TO cl_salv_table,
+      o_events         TYPE REF TO cl_salv_events_table,
+      function_list    type REF TO cl_salv_functions_list,
+      display_settings type REF TO cl_salv_display_settings,
+      selections       type REF TO cl_salv_selections,
+      lo_sort          TYPE REF TO cl_salv_sorts,
+      lo_aggrs         TYPE REF TO cl_salv_aggregations,
+      columns          type REF TO cl_salv_columns_table.
+
+class lcl_events DEFINITION.
+  PUBLIC SECTION.
+    class-METHODS on_double_click
+      for EVENT if_salv_events_actions_table~double_click
+                of cl_salv_events_table
+      IMPORTING row column.
+
+    class-METHODS on_function
+      for event IF_SALV_EVENTS_FUNCTIONS~ADDED_FUNCTION
+                of cl_salv_events_table
+      IMPORTING e_salv_function.
+
+ENDCLASS.
+
+class lcl_events IMPLEMENTATION.
+  METHOD on_double_click.
+    READ TABLE lt_output  INDEX row REFERENCE INTO DATA(dc_ref).
+    IF sy-subrc = 0.
+      ASSIGN dc_ref->(column) TO FIELD-SYMBOL(<fs_dc>).
+      case  column.
+        when  'MATNR'.
+*          set PARAMETER ID 'MAT' field dc_ref->matnr.
+*          set PARAMETER ID 'WRK' FIELD dc_ref->werks.
+*          call TRANSACTION 'MD04' WITHOUT AUTHORITY-CHECK.
+      ENDCASE.
+    endif.
+  ENDMETHOD.
+
+  METHOD on_function.
+*    MESSAGE |Functioncode: { e_salv_function }| type 'I'.
+
+    FIELD-SYMBOLS: <fs_output>   TYPE t_output.
+    DATA: lt_rows TYPE salv_t_row,
+          lt_cols TYPE salv_t_column.
+    DATA: SELTAB    TYPE TABLE OF RSPARAMS,
+          SELTAB_WA LIKE LINE OF SELTAB.
+
+    DATA(lr_selections)   = salv->get_selections( ).
+    DATA(ls_cell)         = selections->get_current_cell( ).
+    DATA(lt_seleced_rows) = selections->get_selected_rows( ).
+
+    data(rel_date) = sy-datum.
+    data(rel_time) = sy-uzeit.
+    data: lv_jobname   type tbtcjob-jobname  VALUE 'Z_ABAP_TRIGGERED_JOB',
+          lv_jobcount  TYPE tbtcjob-jobcount,
+          it_tbtco     like table of tbtco,
+          wa_tbtco     like line of it_tbtco,
+          wa_zpp_jobs  TYPE zpp_jobs,
+          lv_message   type char100,
+          L_RELEASE(1) TYPE c,
+          IDOC_EXIST   type c1 VALUE ''.
+
+    DATA : lo_mime_helper    TYPE REF TO cl_gbt_multirelated_service,
+           lo_bcs            TYPE REF TO cl_bcs,
+           lo_doc_bcs        TYPE REF TO cl_document_bcs,
+           lo_recipient      TYPE REF TO if_recipient_bcs,
+           lo_distlist       TYPE REF TO cl_distributionlist_bcs,
+           lt_soli           TYPE TABLE OF soli,
+           ls_soli           TYPE soli,
+           any_bcs_exception type ref to cx_bcs,
+           lo_gbt_mime       type ref to cx_gbt_mime,
+           lo_bcom_mime      type ref to cx_bcom_mime,
+           diagnostic        type string,
+           lv_status         TYPE bcs_rqst.
+
+*    DATA: lr_selections TYPE REF TO cl_salv_selections.
+    DATA: row   TYPE i,
+          l_row type i.
+    CASE e_salv_function.
+      WHEN '&WE02'.
+        LOOP AT lt_seleced_rows INTO l_row.
+*          CLEAR ls_output.
+          READ TABLE lt_output ASSIGNING <fs_output> INDEX l_row.
+
+
+          MOVE: 'PPPRN'  TO SELTAB_WA-SELNAME,
+                          'S'      TO SELTAB_WA-KIND,      " SELECT-OPTION
+                          'I'      TO SELTAB_WA-SIGN,
+                          'EQ'     TO SELTAB_WA-OPTION,
+                          <fs_output>-RCVPRN     TO SELTAB_WA-LOW.    "Partner Number of Receiver
+          APPEND SELTAB_WA TO SELTAB.
+          clear: SELTAB_WA .
+          MOVE: 'IDOCTP'  TO SELTAB_WA-SELNAME,
+                          'S'      TO SELTAB_WA-KIND,      " SELECT-OPTION
+                          'I'      TO SELTAB_WA-SIGN,
+                          'EQ'     TO SELTAB_WA-OPTION,
+                           <fs_output>-IDOCTP    TO SELTAB_WA-LOW.    "Basic type
+          APPEND SELTAB_WA TO SELTAB.
+          clear: SELTAB_WA .
+
+
+        ENDLOOP.
+
+        MOVE: 'DIRECT'  TO SELTAB_WA-SELNAME,
+      'S'      TO SELTAB_WA-KIND,      " SELECT-OPTION
+      'I'      TO SELTAB_WA-SIGN,
+      'EQ'     TO SELTAB_WA-OPTION,
+       '1'     TO SELTAB_WA-LOW.
+        APPEND SELTAB_WA TO SELTAB.
+        clear: SELTAB_WA .
+
+        DATA(start_time) = VALUE  BEGTI(  ).
+        DATA(end_time) = sy-UZEIT.
+
+        CALL FUNCTION 'CATT_ADD_TO_TIME'
+          EXPORTING
+            IDATE = sy-datum
+            ITIME = sy-UZEIT
+            STDAZ = '-1'    "1 hour back
+          IMPORTING
+*           EDATE =
+            ETIME = start_time.
+
+        CALL FUNCTION 'CATT_ADD_TO_TIME'
+          EXPORTING
+            IDATE = sy-datum
+            ITIME = sy-UZEIT
+            STDAZ = '1'
+          IMPORTING
+*           EDATE =
+            ETIME = end_time.
+
+        MOVE: 'CRETIM'  TO SELTAB_WA-SELNAME,
+                        'S'      TO SELTAB_WA-KIND,      " SELECT-OPTION
+                        'I'      TO SELTAB_WA-SIGN,
+                        'BT'     TO SELTAB_WA-OPTION,
+                        start_time    TO SELTAB_WA-LOW,
+                        end_time    TO SELTAB_WA-HIGH.
+        APPEND SELTAB_WA TO SELTAB.
+        clear: SELTAB_WA .
+
+
+        submit RSEIDOC2      "call transaction WE02
+        with selection-table seltab
+*                  with DIRECT-LOW EQ '1'
+*                  with PPPRN-LOW  = 'partner
+*                  with IDOCTP-LOW = 'basic type
+*                 via selection-screen  "enter selection screen first
+       and return.
+
+********************************************************************************
+**Create Job
+      when '&RUN'.
+*        clear: <fs_output>.
+
+        LOOP AT lt_seleced_rows INTO data(l_row2).
+          READ TABLE lt_output ASSIGNING <fs_output> INDEX l_row2.
+          IF <fs_output> IS not ASSIGNED or <fs_output>-TYPE <> 'IDOC'..
+            CONTINUE.
+          endif.
+*          data(lv_job) = ''.
+*          set parameter id 'Z_TRIGGER_BGJOB' field lv_job.
+          IDOC_EXIST = 'X'.
+
+          CALL FUNCTION 'WIZARD_JOB_OPEN'
+            EXPORTING
+*             DELANFREP              = ' '
+*             JOBGROUP = ' '
+              JOBNAME  = lv_jobname               "'Z_ABAP_TRIGGERED_JOB'
+*             SDLSTRTDT              = NO_DATE
+*             SDLSTRTTM              = NO_TIME
+              JOBCLASS = 'C'
+            IMPORTING
+              JOBCOUNT = lv_jobcount.
+
+          IF not lv_jobcount is initial.
+* Submit Request to perform a report
+
+            SUBMIT ZPP_JOB_RAISE_EVENT TO SAP-SPOOL
+                 DESTINATION 'locl' "sy-pdest
+                 KEEP IN SPOOL 'X'
+                 IMMEDIATELY 'X'
+                    VIA JOB lv_jobname
+                    NUMBER lv_jobcount
+                    with p_event   =  <fs_output>-EVENTID  "'Z_TRIGGER_BGJOB'
+                    with p_eventp  =  <fs_output>-EVENTPARM  "
+                    WITH p_im      = 'X'
+                    WITHOUT SPOOL DYNPRO
+                    AND RETURN.
+
+* Add additional steps here if you need
+            clear: l_RELEASE.
+            CALL FUNCTION 'JOB_CLOSE'
+              EXPORTING
+*               AT_OPMODE        = ' '
+*               AT_OPMODE_PERIODIC                = ' '
+*               CALENDAR_ID      = ' '
+*               EVENT_ID         = ' '
+*               EVENT_PARAM      = ' '
+*               EVENT_PERIODIC   = ' '
+                jobname          = lv_jobname
+                jobcount         = lv_jobcount
+*               LASTSTRTDT       = p_date
+*               LASTSTRTTM       = p_time
+*               SDLSTRTDT        = NO_DATE
+*               SDLSTRTTM        = NO_TIME
+*               STARTDATE_RESTRICTION             = BTC_PROCESS_ALWAYS
+                STRTIMMED        = 'X' "p_im
+*               TARGETSYSTEM     = ' '
+*               START_ON_WORKDAY_NOT_BEFORE       = SY-DATUM
+*               START_ON_WORKDAY_NR               = 0
+              IMPORTING
+                JOB_WAS_RELEASED = l_RELEASE.
+
+          ENDIF.
+          if l_RELEASE = 'X'.
+            MESSAGE  S001(ZPP_JOBS) with <fs_output>-EVENTPARM   .
+          else.
+            MESSAGE  W002(ZPP_JOBS) with <fs_output>-EVENTPARM  .    "exit
+          endif.
+        endloop.
+
+        if IDOC_EXIST = 'X'.
+          WAIT UP TO 6 SECONDS.
+        endif.
+        clear: l_row.
+        LOOP AT lt_seleced_rows INTO l_row.
+          READ TABLE lt_output ASSIGNING <fs_output> INDEX l_row.
+          IF <fs_output> IS not ASSIGNED .
+            CONTINUE.
+          endif.
+          if <fs_output>-TYPE = 'IDOC'.
+            SELECT single  DOCNUM , STATUS    FROM  EDIDC
+                   INTO @data(wa_EDIDC)
+                   WHERE  RCVPRT  = 'LS'
+                   AND    RCVPRN  = @<fs_output>-RCVPRN
+                   AND    CREDAT  >= @rel_date
+                   AND    CRETIM  >= @rel_time
+                   AND    IDOCTP  = @<fs_output>-IDOCTP.
+
+            if sy-subrc = 0.
+              clear: lv_message.
+              if   wa_EDIDC-STATUS = '40' or  wa_EDIDC-STATUS = '41'.
+                CONCATENATE <fs_output>-CHECK_NAME 'status was succesful ' wa_EDIDC-STATUS INTO lv_message SEPARATED BY space.
+                MESSAGE I002(Sy) with lv_message.
+                <fs_output>-CHANGE_BY = sy-UNAME.
+                <fs_output>-CHANGE_ON = sy-DATUM.
+                <fs_output>-CHANGE_TIME = sy-TIMLO.
+                CONCATENATE 'Success, status:' wa_EDIDC-STATUS INTO <fs_output>-LAST_STATUS SEPARATED BY space.
+              ELSE.
+                CONCATENATE <fs_output>-CHECK_NAME ' status failed '  wa_EDIDC-STATUS INTO  lv_message SEPARATED BY space.
+                MESSAGE I002(Sy) with lv_message .
+                <fs_output>-CHANGE_BY = sy-UNAME.
+                <fs_output>-CHANGE_ON = sy-DATUM.
+                <fs_output>-CHANGE_TIME = sy-TIMLO.
+                CONCATENATE 'Failed, status:' wa_EDIDC-STATUS INTO <fs_output>-LAST_STATUS SEPARATED BY space.
+              endif.
+            else.
+              CONCATENATE <fs_output>-CHECK_NAME 'Interface has problem, IDOC was not created' INTO  lv_message SEPARATED BY space.
+              MESSAGE  I002(Sy) with lv_message  .
+
+              <fs_output>-CHANGE_BY = sy-UNAME.
+              <fs_output>-CHANGE_ON = sy-DATUM.
+              <fs_output>-CHANGE_TIME = sy-TIMLO.
+              <fs_output>-LAST_STATUS = 'Failed, No IDOC' .
+            endif.
+            SELECT single * from zpp_jobs WHERE check_name = @<fs_output>-CHECK_NAME INTO @wa_zpp_jobs.
+            wa_zpp_jobs-CHANGE_BY = <fs_output>-CHANGE_BY.
+            wa_zpp_jobs-CHANGE_ON = <fs_output>-CHANGE_ON.
+            wa_zpp_jobs-CHANGE_TIME = <fs_output>-CHANGE_TIME.
+            wa_zpp_jobs-LAST_STATUS = <fs_output>-LAST_STATUS.
+            modify zpp_jobs from wa_zpp_jobs.
+
+          ELSEIF <fs_output>-TYPE = 'FUNCT' and  <fs_output>-JOBNAME = 'ZHO_SEND_TASK_STAT_TO_ZTS'.
+            data(lv_text) = VALUE BAPI_MSG( ) .
+            CALL FUNCTION 'ZHO_SEND_TASK_STAT_TO_ZTS'
+              EXPORTING
+                TRANSPORT_NUMBER = '1'
+                CODE             = '1'
+              IMPORTING
+*               LOADED           =
+                TEXT             = lv_text.
+            if lv_text cs 'Error: System.Exception: Transport number 1 does not exist'.
+              lv_message = 'Function works fine'  .
+            else.
+              lv_message = 'Failed, Function error'  .
+            endif.
+            MESSAGE  I002(Sy) with lv_message.
+            SELECT single * from zpp_jobs WHERE check_name = @<fs_output>-CHECK_NAME INTO @wa_zpp_jobs.
+            wa_zpp_jobs-CHANGE_BY = <fs_output>-CHANGE_BY = sy-UNAME.
+            wa_zpp_jobs-CHANGE_ON = <fs_output>-CHANGE_ON = sy-DATUM.
+            wa_zpp_jobs-CHANGE_TIME = <fs_output>-CHANGE_TIME = sy-TIMLO..
+            wa_zpp_jobs-LAST_STATUS = <fs_output>-LAST_STATUS = lv_message.
+            modify zpp_jobs from wa_zpp_jobs.
+          endif.
+
+
+*&---------------------------------------------------------------------*
+*& Creation of the mail
+*&---------------------------------------------------------------------*
+*https://sap-tips.fjourneau.net/2019/02/28/send-mail-using-bcs-class/
+*https://community.sap.com/t5/application-development-blog-posts/object-oriented-way-of-sending-an-email-from-abap-side/ba-p/13396221
+*
+          " Create the main object of the mail.
+          CREATE OBJECT lo_mime_helper.
+
+          " Create the mail content.-----"NEW WAY"
+          DATA(string) = '<!DOCTYPE html PUBLIC “-//IETF//DTD HTML 5.0//EN">'
+                      && '<HTML><BODY>Hi Dear,<P>the following check: ' && | |
+                      && lv_message && '</P></BODY></HTML>'.
+
+          lt_soli = CL_DOCUMENT_BCS=>STRING_TO_SOLI( string ).
+
+          " Set the HTML body of the mail
+          CALL METHOD lo_mime_helper->set_main_html
+            EXPORTING
+              content     = lt_soli
+              description = 'Test Email'.
+
+* Set the subject of the mail.
+          try.
+              lo_doc_bcs = cl_document_bcs=>create_from_multirelated(
+                              i_subject          = 'Senity check of ' && | | && lv_message
+                              i_importance       = '9'                " 1~High Priority  5~Average priority 9~Low priority
+                              i_multirel_service = lo_mime_helper ).
+
+              lo_bcs = cl_bcs=>create_persistent( ).
+
+              lo_bcs->set_document( i_document = lo_doc_bcs ).
+
+* Set the email address
+*              lo_recipient = cl_cam_address_bcs=>create_internet_address(
+*                                i_address_string =  'yossibe@cocacola.co.il' ).
+*
+*              lo_bcs->add_recipient( i_recipient = lo_recipient ).
+
+* From distribution list (SO15 / SO23)
+* ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+              lo_distlist = cl_distributionlist_bcs=>getu_persistent( i_dliname = <fs_output>-DISTLIST  "  'YOSSIBE'  " Limited to CHAR12
+                                                                       i_private = space ).
+              lo_bcs->add_recipient( lo_distlist ).
+*-------------------------------------
+
+* Change the status.
+              lv_status = 'N'.
+              CALL METHOD lo_bcs->set_status_attributes
+                EXPORTING
+                  i_requested_status = lv_status.
+            catch cx_bcs into any_bcs_exception.
+              diagnostic                  = any_bcs_exception->if_message~get_text( ).
+              message diagnostic type 'I'.
+            CATCH cx_gbt_mime      INTO lo_gbt_mime.
+              diagnostic                  = any_bcs_exception->if_message~get_text( ).
+              message diagnostic type 'I'.
+            CATCH cx_bcom_mime      INTO lo_bcom_mime.
+              diagnostic                  = any_bcs_exception->if_message~get_text( ).
+              message diagnostic type 'I'.
+          endtry.
+
+*&---------------------------------------------------------------------*
+*& Send the email
+*&---------------------------------------------------------------------*
+          TRY.
+              lo_bcs->send( ).
+              COMMIT WORK.
+            CATCH cx_bcs INTO DATA(lx_bcs).
+              ROLLBACK WORK.
+          ENDTRY.
+
+
+        endloop.
+        salv->REFRESH( ).
+
+    ENDCASE.
+  ENDMETHOD.
+
+ENDCLASS.
+
+"Selection screen
+SELECTION-SCREEN BEGIN OF block block1.
+*select-OPTIONS: s_matnr for mara-matnr.
+SELECT-OPTIONS: so_CHECK FOR ZPP_JOBS-CHECK_NAME,
+                so_TYPE  FOR ZPP_JOBS-type,
+                so_ch_on for ZPP_JOBS-CHANGE_ON,
+                so_ch_by FOR ZPP_JOBS-CHANGE_BY.
+
+SELECTION-SCREEN END OF block block1.
+
+START-OF-SELECTION.
+  " Get data
+  SELECT *
+    from ZPP_JOBS
+    INTO CORRESPONDING FIELDS OF TABLE lt_output
+    WHERE CHECK_NAME  in so_CHECK    AND
+          TYPE        in so_TYPE AND
+          CHANGE_ON   in so_ch_on AND
+          CHANGE_BY   in so_ch_by.
+
+  "Row color
+  LOOP AT lt_output ASSIGNING FIELD-SYMBOL(<f>).
+    if <f>-LAST_STATUS(6) = 'Failed' and <f>-CHANGE_ON = sy-datum.
+      <f>-alv_color = VALUE #( ( color-col = 6
+                               color-int = 0
+                               color-inv = 1 ) ).
+    ENDIF.
+  ENDLOOP.
+  "create salv table
+  TRY.
+      cl_salv_table=>factory(
+      IMPORTING
+        r_salv_table = salv
+        CHANGING
+          t_table = lt_output ).
+
+      "events
+      o_events = salv->GET_EVENT( ).
+      set HANDLER lcl_events=>on_double_click for o_events.
+      set HANDLER lcl_events=>on_function  for o_events.
+
+      "column color
+      salv->GET_COLUMNS( )->SET_COLOR_COLUMN( 'ALV_COLOR').
+      data(o_col) = cast cl_salv_column_table( salv->GET_COLUMNS( )->GET_COLUMN( 'CHECK_NAME' ) ).
+      o_col->set_color( VALUE #( col = 5 int = 0 inv = 0 ) ).
+
+      "function list
+      function_list = salv->get_functions( ) .
+      function_list->set_all( ).
+
+      function_list->set_sort_desc( if_salv_c_bool_sap=>true ).
+*    lo_alv_functions_list->set_sort_desc( if_salv_c_bool_sap=>false ).
+
+      "button in GUI Status
+      salv->SET_SCREEN_STATUS(
+      EXPORTING
+        report = sy-repid         "copy frpm program 'SAPLSALV' (transaction SE41 >> Copy Status)
+        pfstatus = 'STANDARD'
+        set_functions = cl_salv_table=>C_FUNCTIONS_ALL ).
+
+      "display settings
+      display_settings = salv->get_display_settings( ).
+      display_settings->set_list_header( 'Job Monitor' ).
+      display_settings->set_striped_pattern( if_salv_c_bool_sap=>true ).
+
+      "selection
+      selections = salv->GET_SELECTIONS( ).
+      selections->SET_SELECTION_MODE( if_salv_c_selection_mode=>row_column ).
+
+      "columns
+      columns = salv->get_columns( ).
+      columns->set_optimize( abap_true ).
+
+      "Set SORT
+      lo_sort = salv->get_sorts( ).
+*   Set the SORT on the WERKS with Subtotal
+      TRY.
+          CALL METHOD lo_sort->add_sort
+            EXPORTING
+              columnname = 'CHECK_NAME'
+              POSITION   = 1
+              SEQUENCE   = 2 "desc , 1 =ascending
+              subtotal   = if_salv_c_bool_sap=>true.
+
+          CALL METHOD lo_sort->add_sort
+            EXPORTING
+              columnname = 'TYPE'
+              POSITION   = 2
+              SEQUENCE   = 1 "2 = desc , 1 =ascending
+              subtotal   = if_salv_c_bool_sap=>false.
+
+*        lo_aggrs = salv->get_aggregations( ).
+*        CALL METHOD lo_aggrs->add_aggregation
+*          EXPORTING
+*            columnname  = 'BSTRF'
+*            aggregation = if_salv_c_aggregation=>MINIMUM.
+
+        CATCH cx_salv_not_found .                       "#EC NO_HANDLER
+        CATCH cx_salv_existing .                        "#EC NO_HANDLER
+        CATCH cx_salv_data_error .                      "#EC NO_HANDLER
+      ENDTRY.
+
+      "display salv table
+      salv->display( ).
+
+    CATCH cx_salv_msg.
+  ENDTRY.
